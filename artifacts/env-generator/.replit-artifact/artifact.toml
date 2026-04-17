@@ -1,0 +1,31 @@
+kind = "web"
+previewPath = "/"
+title = "Vercel .env Generator"
+version = "1.0.0"
+id = "artifacts/env-generator"
+router = "path"
+
+[[integratedSkills]]
+name = "react-vite"
+version = "1.0.0"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 18259
+
+[services.development]
+run = "pnpm --filter @workspace/env-generator run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/env-generator", "run", "build" ]
+publicDir = "artifacts/env-generator/dist/public"
+serve = "static"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "18259"
+BASE_PATH = "/"
