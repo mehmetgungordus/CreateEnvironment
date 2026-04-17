@@ -15,6 +15,7 @@ AI-powered .env file generator for Vercel deployments.
 - API proxy route: `POST /api/ai/generate-env` accepts `{ rawText, directives }`, returns `{ envContent, annotations, summary, moduleCount }`
 - No data stored server-side; raw input is relayed once to OpenRouter and forgotten
 - Client-side download of `.env.local`
+- **Vercel-ready**: `vercel.json` + `api/ai/generate-env.ts` (Edge Function) mirror the Express route; same frontend works on both Replit and Vercel
 
 ## Stack
 

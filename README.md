@@ -140,6 +140,46 @@ The frontend will be available at the URL Vite prints (typically `http://localho
 | Monorepo    | pnpm workspaces                            |
 | Build       | esbuild (server) / Vite (client)           |
 
+## ☁️ Deploy to Vercel
+
+This repo is **Vercel-ready out of the box**. The `api/ai/generate-env.ts` Edge Function mirrors the local Express route, so the same React frontend works in both environments.
+
+[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2FYOUR_USERNAME%2FYOUR_REPO&env=OPENROUTER_API_KEY&envDescription=Get%20a%20free%20key%20from%20openrouter.ai%2Fkeys&envLink=https%3A%2F%2Fopenrouter.ai%2Fkeys&project-name=envforge-ai&repository-name=envforge-ai)
+
+### Manual deploy
+
+```bash
+# 1. Install the Vercel CLI (once)
+npm i -g vercel
+
+# 2. From the repo root
+vercel link        # link to a new or existing project
+vercel env add OPENROUTER_API_KEY    # paste your key (Production + Preview + Development)
+vercel --prod      # ship it
+```
+
+That's it. Vercel will:
+1. Run `pnpm install --frozen-lockfile`
+2. Build the React app via `pnpm --filter @workspace/env-generator run build`
+3. Serve the static output from `artifacts/env-generator/dist/public`
+4. Deploy `api/ai/generate-env.ts` as an Edge Function at `/api/ai/generate-env`
+
+All of this is wired up in [`vercel.json`](./vercel.json) and [`.vercelignore`](./.vercelignore).
+
+### Required environment variable
+
+| Name                 | Where to set                | Description                                 |
+| -------------------- | --------------------------- | ------------------------------------------- |
+| `OPENROUTER_API_KEY` | Vercel → Project → Settings | Your OpenRouter API key (free tier is fine) |
+
+### Local Vercel preview
+
+```bash
+vercel dev   # runs the same Edge function locally on http://localhost:3000
+```
+
+> 💡 Even though this repo uses pnpm workspaces, the only files Vercel actually deploys are the built frontend + the `api/` folder. The Express server (`artifacts/api-server`) is **excluded** via `.vercelignore` — it's only used for local Replit development.
+
 ## 🤝 Contributing
 
 PRs welcome — especially for:

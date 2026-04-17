@@ -1,0 +1,12 @@
+.local
+.cache
+.replit
+.replitignore
+replit.md
+attached_assets
+docs
+artifacts/api-server
+artifacts/mockup-sandbox
+**/node_modules
+**/dist
+*.log
