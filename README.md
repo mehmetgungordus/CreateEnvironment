@@ -155,6 +155,6 @@ MIT — do whatever you want with it.
 
 <div align="center">
 
-Built with 💜 on [Replit](https://replit.com)
+Built with AI on [Likya](https://www.likya.digital)
 
 </div>
