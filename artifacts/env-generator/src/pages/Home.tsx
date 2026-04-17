@@ -20,8 +20,10 @@ import {
 } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { Check, Copy, Download, Eye, EyeOff, Plus, Trash2, Zap, AlertCircle, Info, AlertTriangle, ChevronDown, ChevronRight, Moon, Sun } from "lucide-react";
+import { Check, Copy, Download, Eye, EyeOff, Plus, Trash2, Zap, AlertCircle, Info, AlertTriangle, ChevronDown, KeyRound, ExternalLink, Moon, Sun } from "lucide-react";
 import { useTheme } from "next-themes";
+
+const STORAGE_KEY = "envcraft_openrouter_api_key";
 
 export default function Home() {
   const [entries, setEntries] = useState<EnvEntry[]>([]);
@@ -34,8 +36,24 @@ export default function Home() {
   
   const [pasteContent, setPasteContent] = useState("");
   const [pasteModalOpen, setPasteModalOpen] = useState(false);
+  const [apiKey, setApiKey] = useState("");
+  const [showApiKey, setShowApiKey] = useState(false);
   const { toast } = useToast();
   const { theme, setTheme } = useTheme();
+
+  useEffect(() => {
+    const saved = localStorage.getItem(STORAGE_KEY);
+    if (saved) setApiKey(saved);
+  }, []);
+
+  const handleApiKeyChange = (val: string) => {
+    setApiKey(val);
+    if (val.trim()) {
+      localStorage.setItem(STORAGE_KEY, val.trim());
+    } else {
+      localStorage.removeItem(STORAGE_KEY);
+    }
+  };
 
   const addEntry = () => {
     setEntries([...entries, { id: crypto.randomUUID(), key: "", value: "" }]);
@@ -62,6 +80,11 @@ export default function Home() {
   };
 
   const handleGenerate = async () => {
+    if (!apiKey.trim()) {
+      toast({ title: "API key required", description: "Enter your OpenRouter API key to use the AI analyzer.", variant: "destructive" });
+      return;
+    }
+
     const validEntries = entries.filter((e) => e.key.trim() !== "");
     if (validEntries.length === 0) {
       toast({ title: "No variables", description: "Add at least one variable to analyze.", variant: "destructive" });
@@ -75,17 +98,23 @@ export default function Home() {
       const response = await fetch("/api/ai/generate-env", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ entries: validEntries.map(e => ({ key: e.key, value: e.value })) }),
+        body: JSON.stringify({
+          entries: validEntries.map(e => ({ key: e.key, value: e.value })),
+          apiKey: apiKey.trim(),
+        }),
       });
 
-      if (!response.ok) throw new Error("Failed to generate");
-
       const data = await response.json();
+
+      if (!response.ok) {
+        toast({ title: "Error", description: data.error ?? "Failed to communicate with AI.", variant: "destructive" });
+        return;
+      }
+
       setResults(data);
       toast({ title: "Analysis complete", description: "Successfully analyzed your environment variables." });
     } catch (err) {
-      console.error(err);
-      toast({ title: "Error", description: "Failed to communicate with AI.", variant: "destructive" });
+      toast({ title: "Error", description: "Network error. Please try again.", variant: "destructive" });
     } finally {
       setIsGenerating(false);
     }
@@ -116,7 +145,57 @@ export default function Home() {
         
         {/* LEFT COLUMN: Editor & Results */}
         <div className="lg:col-span-8 flex flex-col gap-6">
-          
+
+          {/* API Key Card */}
+          <Card className={`border-border/50 shadow-sm transition-colors ${apiKey ? 'border-primary/30 bg-primary/5' : 'bg-card/50'}`}>
+            <CardContent className="p-4">
+              <div className="flex flex-col sm:flex-row sm:items-center gap-3">
+                <div className="flex items-center gap-2 shrink-0">
+                  <div className={`w-8 h-8 rounded flex items-center justify-center ${apiKey ? 'bg-primary/20 text-primary' : 'bg-muted/50 text-muted-foreground'}`}>
+                    <KeyRound className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <p className="text-sm font-medium leading-none">OpenRouter API Key</p>
+                    <p className="text-xs text-muted-foreground mt-0.5">
+                      Model: <span className="font-mono text-primary/80">qwen/qwen3-235b-a22b:free</span>
+                    </p>
+                  </div>
+                </div>
+                <div className="flex-1 flex items-center gap-2">
+                  <div className="relative flex-1">
+                    <Input
+                      type={showApiKey ? "text" : "password"}
+                      placeholder="sk-or-v1-..."
+                      value={apiKey}
+                      onChange={(e) => handleApiKeyChange(e.target.value)}
+                      className="font-mono text-sm pr-10 bg-background/50 border-border/60 focus-visible:ring-primary/50"
+                      data-testid="input-api-key"
+                    />
+                    <button
+                      onClick={() => setShowApiKey(!showApiKey)}
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
+                      data-testid="button-toggle-api-key"
+                    >
+                      {showApiKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                    </button>
+                  </div>
+                  <a
+                    href="https://openrouter.ai/keys"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="shrink-0 inline-flex items-center gap-1 text-xs text-primary/80 hover:text-primary transition-colors whitespace-nowrap"
+                    data-testid="link-get-api-key"
+                  >
+                    Get free key <ExternalLink className="w-3 h-3" />
+                  </a>
+                </div>
+              </div>
+              <p className="text-xs text-muted-foreground mt-3 pl-10 sm:pl-0">
+                Key is saved in your browser only — never sent to our servers except to relay to OpenRouter.
+              </p>
+            </CardContent>
+          </Card>
+
           {/* Privacy Banner */}
           <Collapsible className="bg-blue-500/10 border border-blue-500/20 rounded-lg overflow-hidden">
             <div className="px-4 py-3 flex items-start gap-3">
