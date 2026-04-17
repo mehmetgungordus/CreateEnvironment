@@ -6,14 +6,15 @@ pnpm workspace monorepo using TypeScript. Each package manages its own dependenc
 
 ## Artifacts
 
-### EnvCraft (`artifacts/env-generator`)
+### EnvForge.ai (`artifacts/env-generator`)
 AI-powered .env file generator for Vercel deployments.
-- Frontend-only React + Vite app at `/`
-- Uses OpenRouter API (`qwen/qwen3-235b-a22b:free`) via user-provided API key
-- User enters their OpenRouter key (stored in localStorage, never persisted server-side)
-- API proxy route: `POST /api/ai/generate-env` (in `artifacts/api-server/src/routes/ai.ts`)
-- Key sent per-request to OpenRouter, never stored on server
-- Downloads `.env` and `.env.example` files client-side
+- React + Vite app at `/`
+- Two-panel dark UI: chaotic raw input (left) → syntax-highlighted .env output with inline AI annotation badges (right)
+- Three transformation directives: Auto-Detect Groups, Inject Vercel Prefix, Generate Missing Keys
+- Uses OpenRouter API (`openai/gpt-oss-120b:free` model) via server-side `OPENROUTER_API_KEY` secret — never exposed to client
+- API proxy route: `POST /api/ai/generate-env` accepts `{ rawText, directives }`, returns `{ envContent, annotations, summary, moduleCount }`
+- No data stored server-side; raw input is relayed once to OpenRouter and forgotten
+- Client-side download of `.env.local`
 
 ## Stack
 

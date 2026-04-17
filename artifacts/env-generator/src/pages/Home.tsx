@@ -1,534 +1,466 @@
-import React, { useState, useEffect } from "react";
+import { useState, useMemo } from "react";
 import { useToast } from "@/hooks/use-toast";
-import { parseEnvContent, EnvEntry } from "@/lib/env-parser";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { Switch } from "@/components/ui/switch";
 import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-} from "@/components/ui/dialog";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { Check, Copy, Download, Eye, EyeOff, Plus, Trash2, Zap, AlertCircle, Info, AlertTriangle, ChevronDown, KeyRound, ExternalLink, Moon, Sun } from "lucide-react";
-import { useTheme } from "next-themes";
+  Check,
+  Copy,
+  Download,
+  Clipboard,
+  Zap,
+  Puzzle,
+  ShieldCheck,
+  ExternalLink,
+  CheckCircle2,
+  Loader2,
+} from "lucide-react";
 
-const STORAGE_KEY = "envcraft_openrouter_api_key";
+type Annotation = { key: string; label: string; type: "applied" | "warn" | "info" };
+
+type Result = {
+  envContent: string;
+  annotations: Annotation[];
+  summary: string;
+  moduleCount: number;
+};
+
+const PLACEHOLDER = `Paste chaotically...
+
+E.g.
+db connection = postgresql://user:pass@localhost:5432/mydb
+
+secret key: 9as7df8s7df987s9d8f
+
+using vercel? yes
+
+node env: production`;
 
 export default function Home() {
-  const [entries, setEntries] = useState<EnvEntry[]>([]);
+  const [rawText, setRawText] = useState("");
+  const [autoDetect, setAutoDetect] = useState(true);
+  const [injectPrefix, setInjectPrefix] = useState(true);
+  const [generateMissing, setGenerateMissing] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
-  const [results, setResults] = useState<{
-    envContent: string;
-    suggestions: { key: string; suggestion: string; severity: "info" | "warning" | "error" }[];
-    summary: string;
-  } | null>(null);
-  
-  const [pasteContent, setPasteContent] = useState("");
-  const [pasteModalOpen, setPasteModalOpen] = useState(false);
-  const [apiKey, setApiKey] = useState("");
-  const [showApiKey, setShowApiKey] = useState(false);
+  const [result, setResult] = useState<Result | null>(null);
+  const [copied, setCopied] = useState(false);
   const { toast } = useToast();
-  const { theme, setTheme } = useTheme();
 
-  useEffect(() => {
-    const saved = localStorage.getItem(STORAGE_KEY);
-    if (saved) setApiKey(saved);
-  }, []);
-
-  const handleApiKeyChange = (val: string) => {
-    setApiKey(val);
-    if (val.trim()) {
-      localStorage.setItem(STORAGE_KEY, val.trim());
-    } else {
-      localStorage.removeItem(STORAGE_KEY);
-    }
-  };
-
-  const addEntry = () => {
-    setEntries([...entries, { id: crypto.randomUUID(), key: "", value: "" }]);
-  };
-
-  const removeEntry = (id: string) => {
-    setEntries(entries.filter((e) => e.id !== id));
-  };
-
-  const updateEntry = (id: string, field: "key" | "value", val: string) => {
-    setEntries(entries.map((e) => (e.id === id ? { ...e, [field]: val } : e)));
-  };
-
-  const handlePaste = () => {
-    const parsed = parseEnvContent(pasteContent);
-    if (parsed.length > 0) {
-      setEntries([...entries, ...parsed]);
-      toast({ title: "Variables imported", description: `Added ${parsed.length} variables.` });
-      setPasteModalOpen(false);
-      setPasteContent("");
-    } else {
-      toast({ title: "No variables found", description: "Could not parse any valid key=value pairs.", variant: "destructive" });
+  const handlePasteFromClipboard = async () => {
+    try {
+      const text = await navigator.clipboard.readText();
+      setRawText((prev) => (prev ? `${prev}\n${text}` : text));
+      toast({ title: "Pasted from clipboard" });
+    } catch {
+      toast({ title: "Clipboard access denied", variant: "destructive" });
     }
   };
 
   const handleGenerate = async () => {
-    if (!apiKey.trim()) {
-      toast({ title: "API key required", description: "Enter your OpenRouter API key to use the AI analyzer.", variant: "destructive" });
-      return;
-    }
-
-    const validEntries = entries.filter((e) => e.key.trim() !== "");
-    if (validEntries.length === 0) {
-      toast({ title: "No variables", description: "Add at least one variable to analyze.", variant: "destructive" });
+    if (!rawText.trim()) {
+      toast({ title: "Empty input", description: "Paste some config to forge.", variant: "destructive" });
       return;
     }
 
     setIsGenerating(true);
-    setResults(null);
+    setResult(null);
 
     try {
       const response = await fetch("/api/ai/generate-env", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          entries: validEntries.map(e => ({ key: e.key, value: e.value })),
-          apiKey: apiKey.trim(),
+          rawText,
+          directives: {
+            autoDetectGroups: autoDetect,
+            injectVercelPrefix: injectPrefix,
+            generateMissingKeys: generateMissing,
+          },
         }),
       });
 
       const data = await response.json();
 
       if (!response.ok) {
-        toast({ title: "Error", description: data.error ?? "Failed to communicate with AI.", variant: "destructive" });
+        toast({ title: "Generation failed", description: data.error ?? "Try again.", variant: "destructive" });
         return;
       }
 
-      setResults(data);
-      toast({ title: "Analysis complete", description: "Successfully analyzed your environment variables." });
-    } catch (err) {
-      toast({ title: "Error", description: "Network error. Please try again.", variant: "destructive" });
+      setResult(data);
+    } catch {
+      toast({ title: "Network error", variant: "destructive" });
     } finally {
       setIsGenerating(false);
     }
   };
 
+  const handleCopy = async () => {
+    if (!result) return;
+    try {
+      await navigator.clipboard.writeText(result.envContent);
+      setCopied(true);
+      toast({ title: "Copied raw .env" });
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      toast({ title: "Copy failed", variant: "destructive" });
+    }
+  };
+
+  const handleDownload = () => {
+    if (!result) return;
+    const blob = new Blob([result.envContent], { type: "text/plain" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = ".env.local";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
   return (
-    <div className="min-h-[100dvh] w-full flex flex-col bg-background text-foreground selection:bg-primary/30">
-      <header className="border-b border-border/40 bg-card/50 backdrop-blur sticky top-0 z-10">
-        <div className="container max-w-6xl mx-auto px-4 h-16 flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <div className="w-8 h-8 rounded bg-primary/20 flex items-center justify-center text-primary font-bold">
-              EC
+    <div className="min-h-[100dvh] w-full flex flex-col bg-[#0a0b10] text-white/90 selection:bg-[#9b6cff]/40">
+      {/* TOP BAR */}
+      <header className="border-b border-white/5 bg-[#0d0e15]/80 backdrop-blur">
+        <div className="px-6 h-14 flex items-center justify-between">
+          <div className="flex items-center gap-6">
+            <div className="flex items-center gap-2.5">
+              <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-[#9b6cff] to-[#5b8def] flex items-center justify-center">
+                <Puzzle className="w-4 h-4 text-white" strokeWidth={2.5} />
+              </div>
+              <span className="font-semibold tracking-tight text-[15px]">
+                EnvForge<span className="text-[#9b6cff]">.ai</span>
+              </span>
             </div>
-            <h1 className="font-semibold tracking-tight text-lg">EnvCraft</h1>
+            <div className="hidden md:flex items-center gap-2 text-[11px] uppercase tracking-wider text-white/50 font-medium">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+              Zero Server Storage
+              <span className="text-white/20">•</span>
+              AI Proxied via Backend
+            </div>
           </div>
-          <div className="flex items-center gap-4">
-            <div className="text-sm text-muted-foreground hidden sm:block">
-              {entries.length} variables
+          <div className="flex items-center gap-2">
+            <a
+              href="https://github.com"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1.5 px-3 h-8 rounded-md text-xs font-medium text-white/70 hover:text-white border border-white/10 hover:border-white/20 transition-colors"
+              data-testid="link-view-source"
+            >
+              <ExternalLink className="w-3.5 h-3.5" /> View Source
+            </a>
+            <div className="inline-flex items-center gap-1.5 px-3 h-8 rounded-md text-xs font-medium text-emerald-400 bg-emerald-400/10 border border-emerald-400/20">
+              <ShieldCheck className="w-3.5 h-3.5" /> Vercel Ready
             </div>
-            <Button variant="ghost" size="icon" onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')} data-testid="button-theme-toggle">
-              {theme === 'dark' ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
-            </Button>
           </div>
         </div>
       </header>
 
-      <main className="flex-1 container max-w-6xl mx-auto px-4 py-8 grid grid-cols-1 lg:grid-cols-12 gap-8">
-        
-        {/* LEFT COLUMN: Editor & Results */}
-        <div className="lg:col-span-8 flex flex-col gap-6">
-
-          {/* API Key Card */}
-          <Card className={`border-border/50 shadow-sm transition-colors ${apiKey ? 'border-primary/30 bg-primary/5' : 'bg-card/50'}`}>
-            <CardContent className="p-4">
-              <div className="flex flex-col sm:flex-row sm:items-center gap-3">
-                <div className="flex items-center gap-2 shrink-0">
-                  <div className={`w-8 h-8 rounded flex items-center justify-center ${apiKey ? 'bg-primary/20 text-primary' : 'bg-muted/50 text-muted-foreground'}`}>
-                    <KeyRound className="w-4 h-4" />
-                  </div>
-                  <div>
-                    <p className="text-sm font-medium leading-none">OpenRouter API Key</p>
-                    <p className="text-xs text-muted-foreground mt-0.5">
-                      Model: <span className="font-mono text-primary/80">qwen/qwen3-235b-a22b:free</span>
-                    </p>
-                  </div>
-                </div>
-                <div className="flex-1 flex items-center gap-2">
-                  <div className="relative flex-1">
-                    <Input
-                      type={showApiKey ? "text" : "password"}
-                      placeholder="sk-or-v1-..."
-                      value={apiKey}
-                      onChange={(e) => handleApiKeyChange(e.target.value)}
-                      className="font-mono text-sm pr-10 bg-background/50 border-border/60 focus-visible:ring-primary/50"
-                      data-testid="input-api-key"
-                    />
-                    <button
-                      onClick={() => setShowApiKey(!showApiKey)}
-                      className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
-                      data-testid="button-toggle-api-key"
-                    >
-                      {showApiKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                    </button>
-                  </div>
-                  <a
-                    href="https://openrouter.ai/keys"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="shrink-0 inline-flex items-center gap-1 text-xs text-primary/80 hover:text-primary transition-colors whitespace-nowrap"
-                    data-testid="link-get-api-key"
-                  >
-                    Get free key <ExternalLink className="w-3 h-3" />
-                  </a>
-                </div>
-              </div>
-              <p className="text-xs text-muted-foreground mt-3 pl-10 sm:pl-0">
-                Key is saved in your browser only — never sent to our servers except to relay to OpenRouter.
-              </p>
-            </CardContent>
-          </Card>
-
-          {/* Privacy Banner */}
-          <Collapsible className="bg-blue-500/10 border border-blue-500/20 rounded-lg overflow-hidden">
-            <div className="px-4 py-3 flex items-start gap-3">
-              <Info className="w-5 h-5 text-blue-500 mt-0.5 shrink-0" />
-              <div className="flex-1">
-                <h3 className="text-sm font-medium text-blue-500">Privacy First</h3>
-                <p className="text-sm text-muted-foreground mt-1">
-                  Your data never touches our database. All processing is transient.
-                </p>
-                <CollapsibleTrigger className="text-xs text-blue-500 hover:text-blue-400 font-medium flex items-center gap-1 mt-2">
-                  Read more details <ChevronDown className="w-3 h-3" />
-                </CollapsibleTrigger>
-                <CollapsibleContent className="text-xs text-muted-foreground mt-2 space-y-2">
-                  <p>When you click "Analyze", your keys and values are sent securely to our AI for formatting and validation, but they are never logged, stored, or saved on our servers.</p>
-                  <p>The resulting .env file is generated purely in your browser session.</p>
-                </CollapsibleContent>
-              </div>
+      {/* MAIN SPLIT */}
+      <main className="flex-1 grid grid-cols-1 lg:grid-cols-2 gap-0">
+        {/* LEFT: INPUT */}
+        <section className="border-r border-white/5 flex flex-col p-6 gap-6 min-h-[calc(100dvh-3.5rem)]">
+          {/* Input header */}
+          <div>
+            <div className="flex items-center gap-2 text-[11px] uppercase tracking-[0.2em] text-white/50 font-medium mb-2">
+              <span className="w-1.5 h-1.5 rounded-full bg-[#9b6cff]" />
+              Untamed Input
             </div>
-          </Collapsible>
+            <p className="text-sm text-white/60">
+              Paste raw keys, JSON, or messy config. AI will structure it.
+            </p>
+          </div>
 
-          {/* Input Section */}
-          <Card className="border-border/50 shadow-sm overflow-hidden">
-            <CardHeader className="bg-card/50 pb-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <CardTitle className="text-lg">Environment Variables</CardTitle>
-                  <CardDescription>Add, paste, or edit your deployment config</CardDescription>
-                </div>
-                <Dialog open={pasteModalOpen} onOpenChange={setPasteModalOpen}>
-                  <DialogTrigger asChild>
-                    <Button variant="outline" size="sm" data-testid="button-paste-env">
-                      Paste .env
-                    </Button>
-                  </DialogTrigger>
-                  <DialogContent>
-                    <DialogHeader>
-                      <DialogTitle>Paste .env content</DialogTitle>
-                    </DialogHeader>
-                    <Textarea
-                      className="min-h-[200px] font-mono text-sm"
-                      placeholder="KEY=value&#10;NEXT_PUBLIC_API_URL=https://..."
-                      value={pasteContent}
-                      onChange={(e) => setPasteContent(e.target.value)}
-                      data-testid="textarea-paste-content"
-                    />
-                    <div className="flex justify-end gap-2 mt-4">
-                      <Button variant="ghost" onClick={() => setPasteModalOpen(false)}>Cancel</Button>
-                      <Button onClick={handlePaste} data-testid="button-import-pasted">Import</Button>
-                    </div>
-                  </DialogContent>
-                </Dialog>
+          {/* Textarea panel */}
+          <div className="relative flex-1 min-h-[280px] rounded-xl border border-white/10 bg-[#0d0e15] overflow-hidden focus-within:border-[#9b6cff]/40 transition-colors">
+            <Textarea
+              value={rawText}
+              onChange={(e) => setRawText(e.target.value)}
+              placeholder={PLACEHOLDER}
+              className="h-full w-full resize-none bg-transparent border-0 font-mono text-sm leading-relaxed p-5 pb-14 placeholder:text-white/25 focus-visible:ring-0 focus-visible:ring-offset-0"
+              data-testid="textarea-raw-input"
+            />
+            <div className="absolute bottom-3 right-3">
+              <button
+                onClick={handlePasteFromClipboard}
+                className="inline-flex items-center gap-1.5 px-3 h-8 rounded-md text-xs font-medium bg-white/5 hover:bg-white/10 text-white/70 hover:text-white border border-white/10 transition-colors"
+                data-testid="button-paste-clipboard"
+              >
+                <Clipboard className="w-3.5 h-3.5" /> Paste from Clipboard
+              </button>
+            </div>
+          </div>
+
+          {/* Directives */}
+          <div className="rounded-xl border border-white/10 bg-[#0d0e15]/60 p-5">
+            <div className="flex items-center gap-2 text-[11px] uppercase tracking-[0.2em] text-white/50 font-medium mb-4">
+              <span className="w-1.5 h-1.5 rounded-full bg-[#5b8def]" />
+              Transformation Directives
+            </div>
+            <div className="space-y-4">
+              <DirectiveRow
+                title="Auto-Detect Groups"
+                desc="Group by service (DB, Auth, API)"
+                checked={autoDetect}
+                onChange={setAutoDetect}
+                testId="switch-auto-detect"
+              />
+              <DirectiveRow
+                title="Inject Vercel Prefix"
+                desc="Add NEXT_PUBLIC_ to client keys"
+                checked={injectPrefix}
+                onChange={setInjectPrefix}
+                testId="switch-inject-prefix"
+              />
+              <DirectiveRow
+                title="Generate Missing Keys"
+                desc="AI suggests common forgotten vars"
+                checked={generateMissing}
+                onChange={setGenerateMissing}
+                testId="switch-generate-missing"
+              />
+            </div>
+          </div>
+
+          {/* Generate Button */}
+          <Button
+            onClick={handleGenerate}
+            disabled={isGenerating}
+            className="h-14 w-full text-base font-semibold tracking-wide bg-gradient-to-r from-[#9b6cff] to-[#7c5cff] hover:from-[#a87dff] hover:to-[#8d6dff] text-white shadow-[0_0_30px_-5px_rgba(155,108,255,0.5)] border border-[#9b6cff]/30"
+            data-testid="button-generate"
+          >
+            {isGenerating ? (
+              <>
+                <Loader2 className="w-5 h-5 mr-2 animate-spin" /> FORGING...
+              </>
+            ) : (
+              <>
+                <Zap className="w-5 h-5 mr-2 fill-white" /> GENERATE .ENV FILE
+              </>
+            )}
+          </Button>
+        </section>
+
+        {/* RIGHT: OUTPUT */}
+        <section className="flex flex-col bg-[#0a0b10] min-h-[calc(100dvh-3.5rem)]">
+          {/* Editor header */}
+          <div className="flex items-center justify-between px-4 h-11 border-b border-white/5 bg-[#0d0e15]">
+            <div className="flex items-center gap-2">
+              <div className="flex gap-1.5 mr-3">
+                <div className="w-3 h-3 rounded-full bg-white/10" />
+                <div className="w-3 h-3 rounded-full bg-white/10" />
+                <div className="w-3 h-3 rounded-full bg-white/10" />
               </div>
-            </CardHeader>
-            <CardContent className="p-0">
-              {entries.length === 0 ? (
-                <div className="py-16 text-center flex flex-col items-center justify-center">
-                  <div className="w-16 h-16 bg-muted/30 rounded-full flex items-center justify-center mb-4">
-                    <Plus className="w-8 h-8 text-muted-foreground" />
-                  </div>
-                  <h3 className="text-base font-medium mb-1">No variables yet</h3>
-                  <p className="text-sm text-muted-foreground mb-6 max-w-sm">
-                    Start adding variables manually or paste your existing .env file to let our AI analyze it.
-                  </p>
-                  <Button onClick={addEntry} data-testid="button-add-first">
-                    <Plus className="w-4 h-4 mr-2" /> Add Variable
-                  </Button>
+              <FileTab name=".env.local" active />
+              <FileTab name="next.config.js" />
+            </div>
+            <div>
+              {result ? (
+                <div className="inline-flex items-center gap-1.5 px-2.5 h-7 rounded-md text-[11px] font-medium text-emerald-400 bg-emerald-400/10 border border-emerald-400/20">
+                  <CheckCircle2 className="w-3 h-3" /> Validated
                 </div>
               ) : (
-                <div className="divide-y divide-border/30">
-                  {entries.map((entry, index) => (
-                    <EnvRow
-                      key={entry.id}
-                      entry={entry}
-                      onUpdate={(field, val) => updateEntry(entry.id, field, val)}
-                      onRemove={() => removeEntry(entry.id)}
-                      index={index}
-                    />
-                  ))}
-                  <div className="p-4 bg-muted/10 flex justify-between items-center">
-                    <Button variant="ghost" size="sm" onClick={addEntry} className="text-muted-foreground hover:text-foreground" data-testid="button-add-row">
-                      <Plus className="w-4 h-4 mr-2" /> Add row
-                    </Button>
-                    <Button 
-                      onClick={handleGenerate} 
-                      disabled={isGenerating || entries.every(e => !e.key)}
-                      className="bg-primary hover:bg-primary/90 text-primary-foreground font-medium shadow-primary/20 shadow-lg"
-                      data-testid="button-analyze"
-                    >
-                      {isGenerating ? (
-                        <>
-                          <div className="w-4 h-4 border-2 border-primary-foreground/30 border-t-primary-foreground rounded-full animate-spin mr-2" />
-                          Analyzing...
-                        </>
-                      ) : (
-                        <>
-                          <Zap className="w-4 h-4 mr-2" /> Analyze & Generate
-                        </>
-                      )}
-                    </Button>
-                  </div>
+                <div className="inline-flex items-center gap-1.5 px-2.5 h-7 rounded-md text-[11px] font-medium text-white/40 bg-white/5 border border-white/10">
+                  Awaiting Input
                 </div>
               )}
-            </CardContent>
-          </Card>
-
-          {/* Results Section */}
-          {results && (
-            <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
-              {/* Summary & Suggestions */}
-              <Card className="border-primary/20 bg-primary/5 shadow-sm">
-                <CardContent className="p-6">
-                  <div className="flex items-start gap-4">
-                    <div className="w-10 h-10 rounded-full bg-primary/20 flex items-center justify-center shrink-0">
-                      <Zap className="w-5 h-5 text-primary" />
-                    </div>
-                    <div className="flex-1 space-y-4">
-                      <div>
-                        <h3 className="text-lg font-medium text-primary">AI Analysis</h3>
-                        <p className="text-sm text-muted-foreground mt-1">{results.summary}</p>
-                      </div>
-                      
-                      {results.suggestions.length > 0 && (
-                        <div className="space-y-2 mt-4">
-                          <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Suggestions</h4>
-                          <div className="space-y-2">
-                            {results.suggestions.map((s, i) => (
-                              <div key={i} className="flex items-start gap-2 bg-background/50 p-3 rounded border border-border/50">
-                                {s.severity === 'error' && <AlertCircle className="w-4 h-4 text-destructive mt-0.5" />}
-                                {s.severity === 'warning' && <AlertTriangle className="w-4 h-4 text-yellow-500 mt-0.5" />}
-                                {s.severity === 'info' && <Info className="w-4 h-4 text-blue-500 mt-0.5" />}
-                                <div>
-                                  <div className="flex items-center gap-2">
-                                    <span className="font-mono text-xs font-bold">{s.key}</span>
-                                    <Badge variant="outline" className={`text-[10px] uppercase h-5 px-1.5 ${s.severity === 'error' ? 'text-destructive border-destructive/30' : s.severity === 'warning' ? 'text-yellow-500 border-yellow-500/30' : 'text-blue-500 border-blue-500/30'}`}>
-                                      {s.severity}
-                                    </Badge>
-                                  </div>
-                                  <p className="text-sm mt-1">{s.suggestion}</p>
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                </CardContent>
-              </Card>
-
-              {/* Code Preview */}
-              <Card className="border-border/50 overflow-hidden bg-[#0f1117]">
-                <div className="flex items-center justify-between px-4 py-2 border-b border-white/10 bg-[#1a1d27]">
-                  <div className="flex space-x-2">
-                    <div className="w-3 h-3 rounded-full bg-red-500/80"></div>
-                    <div className="w-3 h-3 rounded-full bg-yellow-500/80"></div>
-                    <div className="w-3 h-3 rounded-full bg-green-500/80"></div>
-                  </div>
-                  <span className="text-xs text-white/50 font-mono">.env</span>
-                  <CopyButton text={results.envContent} />
-                </div>
-                <div className="p-4 overflow-x-auto">
-                  <pre className="font-mono text-sm leading-relaxed">
-                    <CodeHighlighted content={results.envContent} />
-                  </pre>
-                </div>
-                <div className="flex items-center justify-end gap-2 p-4 border-t border-white/10 bg-[#1a1d27]">
-                  <Button variant="outline" size="sm" className="bg-transparent text-white/80 hover:bg-white/10 hover:text-white border-white/20" onClick={() => downloadFile(".env", results.envContent)} data-testid="button-download-env">
-                    <Download className="w-4 h-4 mr-2" /> Download .env
-                  </Button>
-                  <Button variant="outline" size="sm" className="bg-transparent text-white/80 hover:bg-white/10 hover:text-white border-white/20" onClick={() => downloadFile(".env.example", generateExample(results.envContent))} data-testid="button-download-example">
-                    <Download className="w-4 h-4 mr-2" /> Download .example
-                  </Button>
-                </div>
-              </Card>
             </div>
-          )}
-        </div>
+          </div>
 
-        {/* RIGHT COLUMN: Sidebar */}
-        <div className="lg:col-span-4 space-y-6">
-          <Card className="bg-muted/30 border-border/50">
-            <CardHeader>
-              <CardTitle className="text-sm font-medium flex items-center gap-2">
-                <Zap className="w-4 h-4 text-primary" /> Vercel Pro Tips
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-4 text-sm text-muted-foreground">
-              <div className="space-y-1">
-                <h4 className="font-medium text-foreground">NEXT_PUBLIC_</h4>
-                <p>Variables starting with <code className="text-xs bg-muted px-1 py-0.5 rounded">NEXT_PUBLIC_</code> are exposed to the browser. Never use this for secrets.</p>
+          {/* Code area */}
+          <div className="flex-1 overflow-auto">
+            {result ? (
+              <CodeView content={result.envContent} annotations={result.annotations ?? []} />
+            ) : isGenerating ? (
+              <div className="h-full flex items-center justify-center text-white/40">
+                <div className="flex items-center gap-3">
+                  <Loader2 className="w-5 h-5 animate-spin text-[#9b6cff]" />
+                  <span className="font-mono text-sm">Forging your .env file...</span>
+                </div>
               </div>
-              <div className="space-y-1">
-                <h4 className="font-medium text-foreground">Git Security</h4>
-                <p>Never commit your .env files to source control. Commit your <code className="text-xs bg-muted px-1 py-0.5 rounded">.env.example</code> instead.</p>
-              </div>
-              <div className="space-y-1">
-                <h4 className="font-medium text-foreground">Auto-injection</h4>
-                <p>Vercel automatically injects your environment variables at runtime. You don't need the dotenv package in production.</p>
-              </div>
-              <div className="space-y-1">
-                <h4 className="font-medium text-foreground">Database URLs</h4>
-                <p>Ensure strings like <code className="text-xs bg-muted px-1 py-0.5 rounded">DATABASE_URL</code> do not have trailing slashes or unsupported query parameters depending on your ORM.</p>
-              </div>
-            </CardContent>
-          </Card>
-        </div>
+            ) : (
+              <EmptyState />
+            )}
+          </div>
 
+          {/* Bottom bar */}
+          <div className="border-t border-white/5 bg-[#0d0e15] px-4 h-12 flex items-center justify-between">
+            <div className="flex items-center gap-2 text-xs text-white/50">
+              <div className="w-6 h-6 rounded-full bg-[#9b6cff]/15 flex items-center justify-center">
+                <Puzzle className="w-3 h-3 text-[#9b6cff]" />
+              </div>
+              {result ? result.summary : "No file generated yet."}
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={handleCopy}
+                disabled={!result}
+                className="inline-flex items-center gap-1.5 px-3 h-8 rounded-md text-xs font-medium text-white/70 hover:text-white border border-white/10 hover:border-white/20 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                data-testid="button-copy-raw"
+              >
+                {copied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+                Copy Raw
+              </button>
+              <button
+                onClick={handleDownload}
+                disabled={!result}
+                className="inline-flex items-center gap-1.5 px-3 h-8 rounded-md text-xs font-semibold text-emerald-950 bg-emerald-400 hover:bg-emerald-300 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                data-testid="button-download-env"
+              >
+                <Download className="w-3.5 h-3.5" />
+                Download .env
+              </button>
+            </div>
+          </div>
+        </section>
       </main>
     </div>
   );
 }
 
-// ----------------------------------------------------
+// -----------------------------------------------------------------
 // Subcomponents
-// ----------------------------------------------------
+// -----------------------------------------------------------------
 
-function EnvRow({ entry, onUpdate, onRemove, index }: { entry: EnvEntry; onUpdate: (field: "key"|"value", val: string) => void; onRemove: () => void; index: number }) {
-  const [showValue, setShowValue] = useState(false);
-
+function DirectiveRow({
+  title,
+  desc,
+  checked,
+  onChange,
+  testId,
+}: {
+  title: string;
+  desc: string;
+  checked: boolean;
+  onChange: (v: boolean) => void;
+  testId: string;
+}) {
   return (
-    <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3 p-4 group hover:bg-muted/5 transition-colors">
-      <div className="w-full sm:w-1/3">
-        <Input 
-          placeholder="KEY_NAME" 
-          value={entry.key} 
-          onChange={(e) => onUpdate("key", e.target.value.toUpperCase().replace(/\s+/g, '_'))}
-          className="font-mono text-sm uppercase bg-transparent border-border/50 focus-visible:ring-primary/50"
-          data-testid={`input-key-${index}`}
-        />
+    <div className="flex items-center justify-between gap-4">
+      <div>
+        <div className="text-sm font-medium text-white/90">{title}</div>
+        <div className="text-xs text-white/50 mt-0.5">{desc}</div>
       </div>
-      <div className="hidden sm:block text-muted-foreground font-mono text-sm">=</div>
-      <div className="w-full sm:flex-1 relative">
-        <Input 
-          type={showValue ? "text" : "password"}
-          placeholder="Value" 
-          value={entry.value} 
-          onChange={(e) => onUpdate("value", e.target.value)}
-          className="font-mono text-sm bg-transparent border-border/50 focus-visible:ring-primary/50 pr-10"
-          data-testid={`input-value-${index}`}
-        />
-        <button 
-          onClick={() => setShowValue(!showValue)}
-          className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
-          data-testid={`button-toggle-visibility-${index}`}
-        >
-          {showValue ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-        </button>
-      </div>
-      <Button 
-        variant="ghost" 
-        size="icon" 
-        onClick={onRemove} 
-        className="text-muted-foreground hover:text-destructive opacity-0 group-hover:opacity-100 transition-opacity self-end sm:self-auto shrink-0"
-        data-testid={`button-remove-row-${index}`}
-      >
-        <Trash2 className="w-4 h-4" />
-      </Button>
+      <Switch
+        checked={checked}
+        onCheckedChange={onChange}
+        className="data-[state=checked]:bg-[#9b6cff]"
+        data-testid={testId}
+      />
     </div>
   );
 }
 
-function CodeHighlighted({ content }: { content: string }) {
-  const lines = content.split('\n');
+function FileTab({ name, active }: { name: string; active?: boolean }) {
   return (
-    <>
-      {lines.map((line, i) => {
-        if (line.trim().startsWith('#')) {
-          return <div key={i} className="text-green-500/70">{line}</div>;
-        }
-        if (line.includes('=')) {
-          const idx = line.indexOf('=');
-          const key = line.substring(0, idx);
-          const val = line.substring(idx + 1);
-          return (
-            <div key={i}>
-              <span className="text-cyan-400 font-bold">{key}</span>
-              <span className="text-white/60">=</span>
-              <span className="text-white/90">{val}</span>
-            </div>
-          );
-        }
-        return <div key={i} className="text-white/80">{line}</div>;
-      })}
-    </>
-  );
-}
-
-function CopyButton({ text }: { text: string }) {
-  const [copied, setCopied] = useState(false);
-  const { toast } = useToast();
-
-  const handleCopy = async () => {
-    try {
-      await navigator.clipboard.writeText(text);
-      setCopied(true);
-      toast({ title: "Copied to clipboard" });
-      setTimeout(() => setCopied(false), 2000);
-    } catch (err) {
-      toast({ title: "Failed to copy", variant: "destructive" });
-    }
-  };
-
-  return (
-    <Button 
-      variant="ghost" 
-      size="sm" 
-      onClick={handleCopy} 
-      className="text-white/50 hover:text-white hover:bg-white/10 h-7 px-2"
-      data-testid="button-copy-env"
+    <div
+      className={`inline-flex items-center gap-1.5 px-3 h-7 rounded-md text-xs font-mono ${
+        active
+          ? "bg-[#9b6cff]/10 text-white border border-[#9b6cff]/20"
+          : "text-white/40 hover:text-white/60"
+      }`}
     >
-      {copied ? <Check className="w-3.5 h-3.5 mr-1" /> : <Copy className="w-3.5 h-3.5 mr-1" />}
-      <span className="text-xs">Copy</span>
-    </Button>
+      <span className={`w-2 h-2 rounded-sm ${active ? "bg-[#9b6cff]" : "bg-white/20"}`} />
+      {name}
+    </div>
   );
 }
 
-function downloadFile(filename: string, content: string) {
-  const blob = new Blob([content], { type: "text/plain" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
+function EmptyState() {
+  return (
+    <div className="h-full flex items-center justify-center p-12">
+      <div className="text-center max-w-sm">
+        <div className="w-14 h-14 mx-auto rounded-2xl bg-white/5 flex items-center justify-center mb-4">
+          <Puzzle className="w-6 h-6 text-white/30" />
+        </div>
+        <h3 className="text-sm font-medium text-white/70">No file forged yet</h3>
+        <p className="text-xs text-white/40 mt-2 leading-relaxed">
+          Paste your raw config on the left, set your directives, and hit Generate to watch your
+          chaos turn into a clean .env file.
+        </p>
+      </div>
+    </div>
+  );
 }
 
-function generateExample(content: string): string {
-  return content.split('\n').map(line => {
-    if (line.trim().startsWith('#') || !line.includes('=')) return line;
-    const idx = line.indexOf('=');
-    const key = line.substring(0, idx);
-    return `${key}="your_${key.toLowerCase()}_here"`;
-  }).join('\n');
+function CodeView({ content, annotations }: { content: string; annotations: Annotation[] }) {
+  const lines = useMemo(() => content.split("\n"), [content]);
+
+  const annotationByKey = useMemo(() => {
+    const map = new Map<string, Annotation>();
+    annotations.forEach((a) => {
+      if (a && a.key) map.set(a.key.trim(), a);
+    });
+    return map;
+  }, [annotations]);
+
+  return (
+    <div className="font-mono text-sm leading-7 py-4">
+      {lines.map((line, i) => {
+        const trimmed = line.trim();
+        const isComment = trimmed.startsWith("#");
+        const isEmpty = trimmed === "";
+        let keyName: string | null = null;
+        let valuePart = "";
+        let keyPart = "";
+
+        if (!isComment && !isEmpty && line.includes("=")) {
+          const eqIdx = line.indexOf("=");
+          keyPart = line.substring(0, eqIdx);
+          valuePart = line.substring(eqIdx + 1);
+          keyName = keyPart.replace(/^export\s+/, "").trim();
+        }
+
+        const annotation = keyName ? annotationByKey.get(keyName) : null;
+
+        return (
+          <div
+            key={i}
+            className="grid grid-cols-[3rem_1fr] hover:bg-white/[0.02] group"
+            data-testid={`line-${i + 1}`}
+          >
+            <div className="text-right pr-4 text-white/20 select-none text-xs leading-7">
+              {i + 1}
+            </div>
+            <div className="pr-6 flex items-center gap-3 flex-wrap">
+              {isEmpty ? (
+                <span>&nbsp;</span>
+              ) : isComment ? (
+                <span className="text-white/35">{line}</span>
+              ) : keyName ? (
+                <>
+                  <span>
+                    <span className="text-[#7dd3fc]">{keyPart}</span>
+                    <span className="text-white/40">=</span>
+                    <span className="text-white/85">{valuePart}</span>
+                  </span>
+                  {annotation && <AnnotationBadge annotation={annotation} />}
+                </>
+              ) : (
+                <span className="text-white/70">{line}</span>
+              )}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function AnnotationBadge({ annotation }: { annotation: Annotation }) {
+  const styles =
+    annotation.type === "warn"
+      ? "text-emerald-300 bg-emerald-400/10 border-emerald-400/30"
+      : annotation.type === "info"
+      ? "text-sky-300 bg-sky-400/10 border-sky-400/30"
+      : "text-[#c5a8ff] bg-[#9b6cff]/10 border-[#9b6cff]/30";
+
+  return (
+    <span
+      className={`inline-flex items-center px-2 py-0.5 rounded text-[10px] font-medium border whitespace-nowrap ${styles}`}
+    >
+      {annotation.label}
+    </span>
+  );
 }
