@@ -4,7 +4,12 @@ import type { Request, Response } from "express";
 const router = Router();
 
 const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
-const FREE_MODEL = "openai/gpt-oss-120b:free";
+const FREE_MODELS = [
+  "openai/gpt-oss-120b:free",
+  "z-ai/glm-4.5-air:free",
+  "qwen/qwen3-coder:free",
+  "google/gemma-3-27b-it:free",
+];
 
 router.post("/ai/generate-env", async (req: Request, res: Response) => {
   try {
@@ -38,86 +43,123 @@ router.post("/ai/generate-env", async (req: Request, res: Response) => {
       ? `Active transformation directives:\n${directiveLines.join("\n")}`
       : "No transformation directives active. Just clean and format.";
 
-    const response = await fetch(`${OPENROUTER_BASE_URL}/chat/completions`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
-        "HTTP-Referer": "https://envforge.ai",
-        "X-Title": "EnvForge.ai",
-      },
-      body: JSON.stringify({
-        model: FREE_MODEL,
-        messages: [
-          {
-            role: "system",
-            content: `You are EnvForge.ai — an expert in environment variables and Vercel deployments. The user pastes raw, messy, or chaotic configuration text. Your job is to parse it intelligently (it may be in any format: KEY=VALUE, KEY: VALUE, JSON, prose, etc.), extract real key/value pairs, and produce a clean, properly-formatted .env file.
+    const systemPrompt = `You are EnvForge.ai — an expert in environment variables and Vercel deployments. The user pastes raw, messy, or chaotic configuration text. Your job is to parse it intelligently (it may be in any format: KEY=VALUE, KEY: VALUE, JSON, prose, etc.), extract real key/value pairs, and produce a clean, properly-formatted .env file.
 
 ${directivesBlock}
 
-Return ONLY a valid JSON object (no markdown, no code fences) with these fields:
-- "envContent": (string) the formatted .env file content. Use UPPER_SNAKE_CASE keys, quote values when they contain spaces or special chars, add # comments for sections and brief explanations. Never modify the actual secret/value content — only formatting.
+Return ONLY a valid JSON object (no markdown, no code fences, no prose before or after) with these fields:
+- "envContent": (string) the formatted .env file content. Use UPPER_SNAKE_CASE keys, quote values when they contain spaces or special chars, add # comments for sections. Never modify the actual secret/value content — only formatting.
 - "annotations": (array) inline notes tied to specific keys, each: { "key": "EXACT_KEY_NAME", "label": "short label like 'AI Applied: Next.js Prefix' or 'AI Warn: 32-char minimum'", "type": "applied" | "warn" | "info" }
 - "summary": (string) a single short sentence like "Found 8 variables. Grouped into 4 modules."
 - "moduleCount": (number) how many sections/groups you created
 
 Strict rules:
-- Output JSON only. No prose. No code fences.
+- Output JSON only. Start with { and end with }.
 - Preserve secret values verbatim.
-- If the input looks empty or non-config, return envContent: "" and an explanatory summary.`,
-          },
-          {
-            role: "user",
-            content: `Raw input:\n\n${rawText}`,
-          },
-        ],
-        response_format: { type: "json_object" },
-      }),
-    });
+- If the input looks empty or non-config, return envContent: "" with explanatory summary.`;
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      req.log.error({ status: response.status, errorText }, "OpenRouter API error");
-
-      if (response.status === 401) {
-        res.status(500).json({ error: "Invalid server API key configuration." });
-        return;
-      }
-      if (response.status === 429) {
-        res.status(429).json({ error: "Rate limit reached. Please try again in a moment." });
-        return;
-      }
-
-      res.status(500).json({ error: "AI service error. Please try again." });
-      return;
-    }
-
-    const data = (await response.json()) as {
-      choices: { message: { content: string } }[];
-      error?: { message: string };
-    };
-
-    if (data.error) {
-      req.log.error({ error: data.error }, "OpenRouter returned error");
-      res.status(500).json({ error: data.error.message });
-      return;
-    }
-
-    const rawContent = data.choices[0]?.message?.content;
-    if (!rawContent) {
-      res.status(500).json({ error: "Empty AI response" });
-      return;
-    }
-
-    const jsonMatch = rawContent.match(/\{[\s\S]*\}/);
-    const jsonStr = jsonMatch ? jsonMatch[0] : rawContent;
-
-    const parsed = JSON.parse(jsonStr) as {
+    let parsed: {
       envContent: string;
       annotations: { key: string; label: string; type: string }[];
       summary: string;
       moduleCount: number;
-    };
+    } | null = null;
+    let lastError = "Unknown";
+
+    for (const model of FREE_MODELS) {
+      try {
+        const response = await fetch(`${OPENROUTER_BASE_URL}/chat/completions`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${apiKey}`,
+            "HTTP-Referer": "https://envforge.ai",
+            "X-Title": "EnvForge.ai",
+          },
+          body: JSON.stringify({
+            model,
+            messages: [
+              { role: "system", content: systemPrompt },
+              { role: "user", content: `Raw input:\n\n${rawText}\n\nRespond with JSON only.` },
+            ],
+            temperature: 0.2,
+            max_tokens: 2000,
+          }),
+        });
+
+        if (!response.ok) {
+          const errorText = await response.text();
+          req.log.warn({ model, status: response.status, errorText }, "Model failed, trying next");
+          if (response.status === 401) {
+            res.status(500).json({ error: "Invalid server API key configuration." });
+            return;
+          }
+          lastError = `${response.status}: ${errorText.slice(0, 200)}`;
+          continue;
+        }
+
+        const data = (await response.json()) as {
+          choices?: { message?: { content?: string; reasoning?: string } }[];
+          error?: { message: string };
+        };
+
+        if (data.error) {
+          req.log.warn({ model, error: data.error }, "OpenRouter error, trying next");
+          lastError = data.error.message;
+          continue;
+        }
+
+        const msg = data.choices?.[0]?.message;
+        const rawContent = msg?.content?.trim() || msg?.reasoning?.trim() || "";
+
+        if (!rawContent) {
+          req.log.warn({ model, data }, "Empty content from model, trying next");
+          lastError = "Empty content";
+          continue;
+        }
+
+        const cleaned = rawContent
+          .replace(/^```(?:json)?\s*/i, "")
+          .replace(/\s*```\s*$/i, "")
+          .trim();
+        const firstBrace = cleaned.indexOf("{");
+        const lastBrace = cleaned.lastIndexOf("}");
+        const jsonStr =
+          firstBrace !== -1 && lastBrace > firstBrace
+            ? cleaned.substring(firstBrace, lastBrace + 1)
+            : cleaned;
+
+        try {
+          parsed = JSON.parse(jsonStr);
+        } catch (parseErr) {
+          req.log.warn(
+            { model, rawContent: rawContent.slice(0, 500), err: parseErr },
+            "JSON parse failed, trying next",
+          );
+          lastError = "JSON parse failed";
+          continue;
+        }
+
+        if (parsed && typeof parsed.envContent === "string") {
+          parsed.annotations = Array.isArray(parsed.annotations) ? parsed.annotations : [];
+          parsed.summary = parsed.summary ?? "";
+          parsed.moduleCount = parsed.moduleCount ?? 0;
+          req.log.info({ model }, "AI generation succeeded");
+          break;
+        }
+
+        lastError = "Invalid response shape";
+        parsed = null;
+      } catch (fetchErr) {
+        req.log.warn({ model, err: fetchErr }, "Fetch error, trying next");
+        lastError = String(fetchErr);
+      }
+    }
+
+    if (!parsed) {
+      res.status(502).json({ error: `AI service unavailable. ${lastError}` });
+      return;
+    }
 
     res.json(parsed);
   } catch (err) {
